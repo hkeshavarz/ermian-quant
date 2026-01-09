@@ -88,9 +88,10 @@ def main(force_process=False):
             start_date=start_date,
             end_date=end_date,
             data_dir=processed_dir,
-            initial_balance=initial_balance
+            initial_balance=initial_balance,
+            timeframe=timeframe
         )
-        
+
         if not trades_df.empty:
             # Save results to centralized folder
             out_csv = os.path.join(base_output_dir, f"{symbol}_trades.csv")
@@ -101,28 +102,47 @@ def main(force_process=False):
             print(f"Generating charts for {symbol}...")
             inst_chart_dir = os.path.join(charts_dir, symbol)
             # generate_dashboard(trades_df, inst_chart_dir, initial_balance) # Optional depending on speed
-            
-            # Add to Summary
-            metrics['Instrument'] = symbol
-            summary_results.append(metrics)
         else:
             print(f"No trades generated for {symbol}.")
+            # Initialize empty metrics for report
+            metrics = {
+                'Total Trades': 0, 
+                'Win Rate (%)': 0, 'Total PnL ($)': 0, 'Return (%)': 0, 
+                'Max Drawdown (%)': 0, 'Sharpe Ratio': 0,
+                'Avg Score': 0, 'Tier 1 Trades': 0, 'Tier 2 Trades': 0,
+                'Avg HTF': 0, 'Avg Disp': 0, 'Avg Liq': 0, 'Avg Ctxt': 0
+            }
+            
+        # Add to Summary
+        metrics['Instrument'] = symbol
+        summary_results.append(metrics)
             
     # 3. Final Report
     if summary_results:
         print("\n\n=== FINAL SUMMARY REPORT ===")
         summary_df = pd.DataFrame(summary_results)
         
-        # Reorder columns usually
-        cols = ['Instrument', 'Total Trades', 'Win Rate (%)', 'Total PnL ($)', 'Return (%)', 'Max Drawdown (%)', 'Sharpe Ratio']
-        # Filter existing cols
-        cols = [c for c in cols if c in summary_df.columns]
-        
-        print(summary_df[cols].to_string(index=False))
+        # Performance Report
+        perf_cols = ['Instrument', 'Total Trades', 'Win Rate (%)', 'Total PnL ($)', 'Return (%)', 'Max Drawdown (%)', 'Sharpe Ratio', 'Tier 1 Trades', 'Tier 2 Trades']
+        perf_cols = [c for c in perf_cols if c in summary_df.columns]
+        print(summary_df[perf_cols].to_string(index=False))
         
         summary_csv = os.path.join(base_output_dir, "summary_report.csv")
-        summary_df.to_csv(summary_csv, index=False)
+        summary_df[perf_cols].to_csv(summary_csv, index=False)
         print(f"\nSaved summary to {summary_csv}")
+        
+        # Detailed Analysis Report
+        print("\n=== DETAILED ANALYSIS REPORT ===")
+        analysis_cols = ['Instrument', 'Total Trades', 'Avg Score', 'Avg HTF', 'Avg Disp', 'Avg Liq', 'Avg Ctxt']
+        # Fill NaNs with 0 just in case
+        analysis_df = summary_df.fillna(0)
+        analysis_cols = [c for c in analysis_cols if c in analysis_df.columns]
+        
+        print(analysis_df[analysis_cols].to_string(index=False))
+        
+        analysis_csv = os.path.join(base_output_dir, "analysis_report.csv")
+        analysis_df[analysis_cols].to_csv(analysis_csv, index=False)
+        print(f"\nSaved analysis to {analysis_csv}")
     else:
         print("\nNo results to summarize.")
 

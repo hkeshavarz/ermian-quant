@@ -30,6 +30,16 @@ class TradeManager:
         
         slippage = self.calculate_slippage(atr)
         
+        # Score & Tier
+        score = int(signal_row.get('Tier_Score', 0))
+        tier_type = 'Tier 1' if score >= 85 else ('Tier 2' if score >= 65 else 'Unknown')
+        
+        # Breakdown
+        s_htf = int(signal_row.get('Score_HTF', 0))
+        s_disp = int(signal_row.get('Score_Disp', 0))
+        s_liq = int(signal_row.get('Score_Liq', 0))
+        s_ctxt = int(signal_row.get('Score_Context', 0))
+        
         if direction == 'Long':
             # Buy at Ask + Slippage
             exec_price = ask + slippage
@@ -45,6 +55,12 @@ class TradeManager:
             'id': self.trade_id_counter,
             'entry_time': signal_row.name,
             'signal': direction,
+            'tier_type': tier_type,
+            'tier_score': score,
+            'score_htf': s_htf,
+            'score_disp': s_disp,
+            'score_liq': s_liq,
+            'score_ctxt': s_ctxt,
             'entry_price': exec_price, # Actual fill
             'planned_entry': mid, # Signal price
             'stop_loss': signal_row['Stop_Loss'],

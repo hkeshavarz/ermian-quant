@@ -10,12 +10,13 @@ from ils.strategy import run_strategy
 from ils.backtest import TradeManager
 from ils.metrics import calculate_metrics, generate_monthly_returns
 
-def load_data(data_dir, instrument, start_date, end_date):
+def load_data(data_dir, instrument, start_date, end_date, timeframe="1h"):
     """
-    Load and filter H1 data files.
+    Load and filter data files for specific timeframe.
     """
-    # Pattern: INSTRUMENT_1hour_YYYYMMDD.csv
-    pattern = os.path.join(data_dir, f"{instrument}_*_*.csv")
+    # Pattern: INSTRUMENT_{tf_label}_YYYYMMDD.csv
+    tf_label = timeframe.replace('h', 'hour').replace('min', 'min')
+    pattern = os.path.join(data_dir, f"{instrument}_{tf_label}_*.csv")
     files = glob.glob(pattern)
     files.sort()
     
@@ -24,15 +25,10 @@ def load_data(data_dir, instrument, start_date, end_date):
     start_dt = pd.to_datetime(start_date).date()
     end_dt = pd.to_datetime(end_date).date()
     
-    print(f"Scanning {len(files)} files for range {start_date} to {end_date}...")
+    print(f"Scanning {len(files)} files ({timeframe}) for range {start_date} to {end_date}...")
     
     for f in files:
         basename = os.path.basename(f)
-        # Check if 1hour or 1min? The processor makes '1hour'.
-        # Generic check for timeframe in filename or just trust the pattern?
-        # Let's assume user points to directory with correct files or filter by arg?
-        # For now, trust the glob pattern matching instrument.
-        
         try:
             date_part = basename.split('_')[-1].replace('.csv', '')
             file_date = datetime.datetime.strptime(date_part, '%Y%m%d').date()
@@ -44,7 +40,6 @@ def load_data(data_dir, instrument, start_date, end_date):
                     df.set_index('date', inplace=True)
                     loaded_dfs.append(df)
         except Exception as e:
-            # print(f"Skipping {basename}: {e}")
             continue
             
     if not loaded_dfs:
@@ -74,8 +69,8 @@ def load_daily_bias(data_dir, instrument):
             df = pd.read_csv(f)
             if not df.empty:
                 # Simple Logic: Close > Open = Bullish
-                d_open = df.iloc[0]['open']
-                d_close = df.iloc[0]['close']
+                d_open = df.iloc[0]['Open']
+                d_close = df.iloc[0]['Close']
                 bias = 'Bullish' if d_close > d_open else 'Bearish'
                 bias_map[d_date] = bias
         except:
@@ -83,12 +78,12 @@ def load_daily_bias(data_dir, instrument):
             
     return bias_map
 
-def run_backtest_engine(instrument, start_date, end_date, data_dir, initial_balance=25000.0):
+def run_backtest_engine(instrument, start_date, end_date, data_dir, initial_balance=25000.0, timeframe="1h"):
     print(f"=== Backtest Runner: {instrument} ===")
-    print(f"Range: {start_date} -> {end_date}")
+    print(f"Range: {start_date} -> {end_date} [{timeframe}]")
     
     # 1. Load Data
-    df = load_data(data_dir, instrument, start_date, end_date)
+    df = load_data(data_dir, instrument, start_date, end_date, timeframe)
     if df.empty:
         print("No data found for specified parameters.")
         return None

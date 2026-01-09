@@ -153,9 +153,15 @@ def process_data(input_file, output_dir, instrument, timeframes):
             
             # Filename
             tf_label = tf.replace('h', 'hour').replace('min', 'min')
-            if tf == '1D': tf_label = 'daily'
             
-            out_filename = os.path.join(output_dir, f"{instrument}_{tf_label}_{date_str}.csv")
+            if tf == '1D': 
+                tf_label = 'daily'
+                daily_dir = os.path.join(output_dir, 'daily')
+                os.makedirs(daily_dir, exist_ok=True)
+                out_filename = os.path.join(daily_dir, f"{instrument}_{tf_label}_{date_str}.csv")
+            else:
+                out_filename = os.path.join(output_dir, f"{instrument}_{tf_label}_{date_str}.csv")
+            
             out_df.to_csv(out_filename)
 
     print("Processing complete.")

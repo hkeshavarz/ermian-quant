@@ -66,6 +66,16 @@ def calculate_metrics(trades_df: pd.DataFrame, initial_balance: float = 25000.0)
     if std_daily_ret > 0:
         sharpe_ratio = (mean_daily_ret / std_daily_ret) * np.sqrt(252)
         
+    # Tier Stats
+    avg_score = trades_df['tier_score'].mean() if 'tier_score' in trades_df.columns else 0
+    t1_count = len(trades_df[trades_df['tier_type'] == 'Tier 1']) if 'tier_type' in trades_df.columns else 0
+    t2_count = len(trades_df[trades_df['tier_type'] == 'Tier 2']) if 'tier_type' in trades_df.columns else 0
+    
+    avg_htf = trades_df['score_htf'].mean() if 'score_htf' in trades_df.columns else 0
+    avg_disp = trades_df['score_disp'].mean() if 'score_disp' in trades_df.columns else 0
+    avg_liq = trades_df['score_liq'].mean() if 'score_liq' in trades_df.columns else 0
+    avg_ctxt = trades_df['score_ctxt'].mean() if 'score_ctxt' in trades_df.columns else 0
+        
     metrics = {
         'Total Trades': total_trades,
         'Win Rate (%)': round(win_rate, 2),
@@ -76,7 +86,14 @@ def calculate_metrics(trades_df: pd.DataFrame, initial_balance: float = 25000.0)
         'Sharpe Ratio': round(sharpe_ratio, 2),
         'Expectancy ($)': round(expectancy, 2),
         'Avg Win ($)': round(avg_win, 2),
-        'Avg Loss ($)': round(avg_loss, 2)
+        'Avg Loss ($)': round(avg_loss, 2),
+        'Avg Score': round(avg_score, 1),
+        'Tier 1 Trades': t1_count,
+        'Tier 2 Trades': t2_count,
+        'Avg HTF': round(avg_htf, 1),
+        'Avg Disp': round(avg_disp, 1),
+        'Avg Liq': round(avg_liq, 1),
+        'Avg Ctxt': round(avg_ctxt, 1)
     }
     
     return metrics
