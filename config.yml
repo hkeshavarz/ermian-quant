@@ -29,3 +29,35 @@ instruments:
   - symbol: "EURJPY"
     input_file: "data/sources/eurjpy/eurjpy-tick-2025-01-01-2025-12-31.csv"
     processed_dir: "data/processed/eurjpy"
+  
+  - symbol: "USDCAD"
+    input_file: "data/sources/usdcad/usdcad-tick-2025-01-01-2025-12-31.csv"
+    processed_dir: "data/processed/usdcad"
+
+  - symbol: "USDJPY"
+    input_file: "data/sources/usdjpy/usdjpy-tick-2025-01-01-2025-12-31.csv"
+    processed_dir: "data/processed/usdjpy"
+
+  - symbol: "USDCHF"
+    input_file: "data/sources/usdchf/usdchf-tick-2025-01-01-2025-12-31.csv"
+    processed_dir: "data/processed/usdchf"
+
+  - symbol: "GBPJPY"
+    input_file: "data/sources/gbpjpy/gbpjpy-tick-2025-01-01-2025-12-31.csv"
+    processed_dir: "data/processed/gbpjpy"
+
+  - symbol: "XAGUSD"
+    input_file: "data/sources/xagusd/xagusd-tick-2025-01-01-2025-12-31.csv"
+    processed_dir: "data/processed/xagusd"
+
+  - symbol: "CL"
+    input_file: "data/sources/cl/cl-tick-2025-01-01-2025-12-31.csv"
+    processed_dir: "data/processed/cl"
+
+  - symbol: "NAS100"
+    input_file: "data/sources/nas100/nas100-tick-2025-01-01-2025-12-31.csv"
+    processed_dir: "data/processed/nas100"
+
+  - symbol: "SPX500"
+    input_file: "data/sources/spx500/spx500-tick-2025-01-01-2025-12-31.csv"
+    processed_dir: "data/processed/spx500"

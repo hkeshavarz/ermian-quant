@@ -2,13 +2,49 @@ import pandas as pd
 import numpy as np
 from .indicators import calculate_atr, find_swings_fractal
 
+def validate_displacement(df: pd.DataFrame, atr_col: str = 'ATR') -> pd.DataFrame:
+    """
+    Validate Displacement Candles based on 3.0 spec:
+    - Body / Range >= 0.6
+    - Range >= 1.5 * ATR
+    - Bearish: Close in bottom 30%
+    - Bullish: Close in top 30%
+    """
+    high = df['High']
+    low = df['Low']
+    open_ = df['Open']
+    close = df['Close']
+    atr = df[atr_col] if atr_col in df.columns else pd.Series(0, index=df.index)
+    
+    candle_range = high - low
+    body_size = (close - open_).abs()
+    
+    # Avoid zero division
+    body_ratio = body_size / candle_range.replace(0, np.inf)
+    
+    range_condition = candle_range >= (1.5 * atr)
+    body_condition = body_ratio >= 0.6
+    
+    # Directional close
+    # High - Low is range. 
+    # Bearish: Close <= Low + 0.3 * Range
+    bearish_close = close <= (low + 0.3 * candle_range)
+    # Bullish: Close >= High - 0.3 * Range = Low + 0.7 * Range (approx, strictly High - 0.3*R)
+    bullish_close = close >= (high - 0.3 * candle_range)
+    
+    is_displacement_bull = range_condition & body_condition & bullish_close
+    is_displacement_bear = range_condition & body_condition & bearish_close
+    
+    res = pd.DataFrame(index=df.index)
+    res['Displacement_Bullish'] = is_displacement_bull
+    res['Displacement_Bearish'] = is_displacement_bear
+    return res
+
 def detect_fvg(df: pd.DataFrame, atr_threshold_multiplier: float = 0.5, atr_col: str = 'ATR') -> pd.DataFrame:
     """
     Detect Fair Value Gaps (FVG) based on 3-candle logic.
+    Strict size filter: Gap >= 0.5 * ATR14
     """
-    if atr_col not in df.columns:
-        pass
-
     high = df['High']
     low = df['Low']
     open_ = df['Open']
@@ -23,10 +59,11 @@ def detect_fvg(df: pd.DataFrame, atr_threshold_multiplier: float = 0.5, atr_col:
     gap_bear = low.shift(2) - high
     red_candle_prev = close.shift(1) < open_.shift(1)
     
+    # Strict size filter
     min_size = atr * atr_threshold_multiplier
     
-    is_bull_fvg = (gap_bull > 0) & green_candle_prev & (gap_bull > min_size)
-    is_bear_fvg = (gap_bear > 0) & red_candle_prev & (gap_bear > min_size)
+    is_bull_fvg = (gap_bull > 0) & green_candle_prev & (gap_bull >= min_size)
+    is_bear_fvg = (gap_bear > 0) & red_candle_prev & (gap_bear >= min_size)
     
     result = pd.DataFrame(index=df.index)
     result['FVG_Bullish'] = is_bull_fvg
@@ -36,11 +73,18 @@ def detect_fvg(df: pd.DataFrame, atr_threshold_multiplier: float = 0.5, atr_col:
     
     return result
 
-def detect_liquidity_sweeps(df: pd.DataFrame, swing_lookback: int = 5) -> pd.DataFrame:
+def detect_liquidity_sweeps(df: pd.DataFrame, swing_lookback: int = 5, atr_col: str = 'ATR') -> pd.DataFrame:
     """
     Detect Liquidity Sweeps (Turtle Soup).
+    Bearish Sweep:
+      - High > SwingHigh
+      - Close <= SwingHigh + 0.2 * ATR
+    Bullish Sweep:
+      - Low < SwingLow
+      - Close >= SwingLow - 0.2 * ATR
     """
     swings = find_swings_fractal(df, lookback=swing_lookback)
+    atr = df[atr_col] if atr_col in df.columns else pd.Series(0, index=df.index)
     
     sweeps = pd.DataFrame(index=df.index)
     sweeps['Sweep_Bullish'] = False
@@ -52,6 +96,7 @@ def detect_liquidity_sweeps(df: pd.DataFrame, swing_lookback: int = 5) -> pd.Dat
     high = df['High'].values
     low = df['Low'].values
     close = df['Close'].values
+    atr_vals = atr.values
     
     swing_highs = swings['SwingHigh'].values
     swing_lows = swings['SwingLow'].values
@@ -67,12 +112,16 @@ def detect_liquidity_sweeps(df: pd.DataFrame, swing_lookback: int = 5) -> pd.Dat
             if not np.isnan(swing_lows[confirmed_idx]):
                 last_swing_low = swing_lows[confirmed_idx]
         
+        # Bearish Sweep Logic
         if last_swing_high > -np.inf:
-            if high[i] > last_swing_high and close[i] < last_swing_high:
+            threshold = last_swing_high + (0.2 * atr_vals[i])
+            if high[i] > last_swing_high and close[i] <= threshold:
                 res_bear[i] = True
         
+        # Bullish Sweep Logic
         if last_swing_low < np.inf:
-            if low[i] < last_swing_low and close[i] > last_swing_low:
+            threshold = last_swing_low - (0.2 * atr_vals[i])
+            if low[i] < last_swing_low and close[i] >= threshold:
                 res_bull[i] = True
                 
     sweeps['Sweep_Bullish'] = res_bull
@@ -114,7 +163,6 @@ def detect_order_blocks(df: pd.DataFrame, fvg_df: pd.DataFrame, swings_df: pd.Da
         if has_fvg_bull[i]:
             # This FVG implies a move from i-2 to i.
             # Did this move break structure?
-            # Find closest valid prior swing high (before i-2)
             valid_break = False
             prev_swing_idx = -1
             

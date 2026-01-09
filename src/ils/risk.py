@@ -9,19 +9,24 @@ def calculate_position_size(equity: float, risk_percentage: float, stop_loss_dis
     units = risk_amount / stop_loss_distance
     return units
 
-def get_risk_percentage(tier_score: int, drs_active: bool = False) -> float:
+def get_risk_percentage(tier_score: int, circuit_breaker_active: bool = False) -> float:
     """
     Determine Risk Percentage.
+    Tier 1 (85-100): 1.0R (1.0%)
+    Tier 2 (65-84): 0.5R (0.5%)
+    Circuit Breaker: Reduces R by 50% if active.
     """
-    base_risk = 0.01 
+    base_unit = 0.01 # 1%
     
-    if drs_active:
-        base_risk = 0.005 
+    if circuit_breaker_active:
+        base_unit *= 0.5
         
     if tier_score >= 85:
-        return base_risk 
+        # Tier 1
+        return base_unit
     elif tier_score >= 65:
-        return base_risk * 0.5 
+        # Tier 2
+        return base_unit * 0.5
     else:
         return 0.0
 

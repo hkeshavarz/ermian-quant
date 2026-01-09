@@ -17,16 +17,31 @@ def load_config(config_path="config.yml"):
 
 def check_data_exists(processed_dir, timeframe="1h"):
     """
-    Check if we have processed files in the directory.
+    Check if we have processed files in the directory AND they have valid schema (Bid/Ask).
     """
     # Filename convention: *_1hour_*.csv or *_1min_*.csv
     # normalize timeframe: 1h -> 1hour
     tf_label = timeframe.replace('h', 'hour').replace('min', 'min')
     pattern = os.path.join(processed_dir, f"*_{tf_label}_*.csv")
     files = glob.glob(pattern)
-    return len(files) > 0
+    
+    if not files:
+        return False
+        
+    # Validation: Check first file for Bid_Open
+    try:
+        df = pd.read_csv(files[0], nrows=1)
+        if 'Bid_Open' not in df.columns:
+            print(f"Data in {processed_dir} is outdated (missing Bid/Ask). Reprocessing...")
+            return False
+        if 'Volume' not in df.columns:
+            return False
+    except:
+        return False
+        
+    return True
 
-def main():
+def main(force_process=False):
     print("=== Master Backtest Orchestrator ===")
     config = load_config()
     
@@ -56,13 +71,13 @@ def main():
         print(f"\n--- Instrument: {symbol} ---")
         
         # 1. Data Processing Check
-        if not check_data_exists(processed_dir, timeframe):
-            print(f"Data missing in {processed_dir}. Processing raw ticks...")
+        if force_process or not check_data_exists(processed_dir, timeframe):
+            print(f"Data missing or forced in {processed_dir}. Processing raw ticks...")
             if not os.path.exists(input_file):
                 print(f"CRITICAL: Input file {input_file} not found. Skipping {symbol}.")
                 continue
                 
-            process_data(input_file, processed_dir, symbol, timeframe)
+            process_data(input_file, processed_dir, symbol, [timeframe, '1D'])
         else:
             print(f"Data found in {processed_dir}. Skipping processing.")
             
@@ -85,7 +100,7 @@ def main():
             # Generate Visualization
             print(f"Generating charts for {symbol}...")
             inst_chart_dir = os.path.join(charts_dir, symbol)
-            generate_dashboard(trades_df, inst_chart_dir, initial_balance)
+            # generate_dashboard(trades_df, inst_chart_dir, initial_balance) # Optional depending on speed
             
             # Add to Summary
             metrics['Instrument'] = symbol
@@ -112,4 +127,9 @@ def main():
         print("\nNo results to summarize.")
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--force-process", action="store_true", help="Force reprocessing of data")
+    args = parser.parse_args()
+    
+    main(force_process=args.force_process)

@@ -51,6 +51,7 @@ def load_data(data_dir, instrument, start_date, end_date):
         return pd.DataFrame()
         
     full_df = pd.concat(loaded_dfs)
+    full_df = full_df[~full_df.index.duplicated(keep='first')]
     full_df.sort_index(inplace=True)
     return full_df
 
