@@ -1,0 +1,33 @@
+# Environment Variables
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual Environment
+.ermian-quant/
+venv/
+env/
+.venv/
+
+# Data and Results
+data/
+*.csv
+*.png
+*.jpg
+*.jpeg
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store

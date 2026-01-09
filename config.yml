@@ -1,0 +1,31 @@
+# Backtest Configuration
+
+backtest:
+  start_date: "2025-01-01"
+  end_date: "2025-12-31"
+  initial_balance: 25000.0
+  output_base_dir: "data/backtest_results"
+
+data:
+  timeframe: "1h"
+
+instruments:
+  - symbol: "XAUUSD"
+    input_file: "data/sources/xauusd/xauusd-tick-2025-01-01-2025-12-31.csv"
+    processed_dir: "data/processed/xauusd"
+  
+  - symbol: "AUDUSD"
+    input_file: "data/sources/audusd/audusd-tick-2025-01-01-2025-12-31.csv"
+    processed_dir: "data/processed/audusd"
+
+  - symbol: "EURUSD"
+    input_file: "data/sources/eurusd/eurusd-tick-2025-01-01-2025-12-31.csv"
+    processed_dir: "data/processed/eurusd"
+  
+  - symbol: "GBPUSD"
+    input_file: "data/sources/gbpusd/gbpusd-tick-2025-01-01-2025-12-31.csv"
+    processed_dir: "data/processed/gbpusd"
+
+  - symbol: "EURJPY"
+    input_file: "data/sources/eurjpy/eurjpy-tick-2025-01-01-2025-12-31.csv"
+    processed_dir: "data/processed/eurjpy"
