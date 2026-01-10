@@ -1,12 +1,18 @@
 import pandas as pd
 import numpy as np
 
-def calculate_metrics(trades_df: pd.DataFrame, initial_balance: float = 25000.0) -> dict:
+def calculate_metrics(trades_df, initial_balance=25000.0):
     """
-    Calculate comprehensive performance metrics from a trades DataFrame.
+    Calculate performance metrics from a DataFrame of trades.
     """
     if trades_df.empty:
-        return {}
+        return {
+            'Total Trades': 0, 'Win Rate (%)': 0.0, 'Total PnL ($)': 0.0,
+            'Return (%)': 0.0, 'Max Drawdown (%)': 0.0, 'Sharpe Ratio': 0.0,
+            'Profit Factor': 0.0, 'Avg Score': 0.0, 'Avg HTF': 0.0,
+            'Avg Disp': 0.0, 'Avg Liq': 0.0, 'Avg Ctxt': 0.0,
+            'Tier 1 Trades': 0, 'Tier 2 Trades': 0
+        }
         
     # Basic Stats
     total_trades = len(trades_df)
@@ -14,86 +20,75 @@ def calculate_metrics(trades_df: pd.DataFrame, initial_balance: float = 25000.0)
     losses = trades_df[trades_df['result'] == 'Loss']
     
     win_rate = (len(wins) / total_trades) * 100
-    
-    # PnL
     total_pnl = trades_df['pnl'].sum()
-    final_balance = initial_balance + total_pnl
-    return_pct = (total_pnl / initial_balance) * 100
+    ret_pct = (total_pnl / initial_balance) * 100
     
-    # Averages
-    avg_win = wins['pnl'].mean() if not wins.empty else 0
-    avg_loss = losses['pnl'].mean() if not losses.empty else 0
-    
-    # Expectancy (Average PnL per trade)
-    expectancy = total_pnl / total_trades
+    # Drawdown
+    equity_curve = initial_balance + trades_df['pnl'].cumsum()
+    peak = equity_curve.cummax()
+    drawdown = (equity_curve - peak) / peak * 100
+    max_dd = drawdown.min()
     
     # Profit Factor
-    gross_profit = wins['pnl'].sum() if not wins.empty else 0
-    gross_loss = abs(losses['pnl'].sum()) if not losses.empty else 0
-    profit_factor = gross_profit / gross_loss if gross_loss > 0 else float('inf')
+    gross_profit = wins['pnl'].sum()
+    gross_loss = abs(losses['pnl'].sum())
+    profit_factor = gross_profit / gross_loss if gross_loss != 0 else np.inf
     
-    # Drawdown Calculation (requires equity curve)
-    # Reconstruct Equity Curve from trade list (approximated at close of each trade)
-    trades_df = trades_df.sort_values('exit_time')
-    trades_df['equity'] = initial_balance + trades_df['pnl'].cumsum()
-    trades_df['peak'] = trades_df['equity'].cummax()
-    trades_df['drawdown'] = trades_df['equity'] - trades_df['peak']
-    trades_df['drawdown_pct'] = (trades_df['drawdown'] / trades_df['peak']) * 100
-    
-    max_drawdown = trades_df['drawdown_pct'].min() # Negative value
-    
-    # Sharpe Ratio (Simplistic: based on trade returns, better to use daily returns)
-    # Let's try to infer daily returns if possible, or just trade-based Sharpe
-    # Trade-based Sharpe: Mean(Trade Returns) / Std(Trade Returns) * Sqrt(N)
-    # Where N is roughly trades per year?
-    # Better: Resample equity curve to daily.
-    
-    # Resampling Equity Curve to Daily
-    # Map trade exit times to days
-    trades_df['exit_date'] = pd.to_datetime(trades_df['exit_time']).dt.date
-    daily_pnl = trades_df.groupby('exit_date')['pnl'].sum()
-    
-    # We need a continuous daily series for correct Sharpe
-    idx = pd.date_range(trades_df['exit_date'].min(), trades_df['exit_date'].max())
-    daily_pnl_series = daily_pnl.reindex(idx, fill_value=0)
-    
-    daily_returns = daily_pnl_series / initial_balance # Simple return on initial capital
-    
-    mean_daily_ret = daily_returns.mean()
-    std_daily_ret = daily_returns.std()
-    
-    sharpe_ratio = 0
-    if std_daily_ret > 0:
-        sharpe_ratio = (mean_daily_ret / std_daily_ret) * np.sqrt(252)
+    # Sharpe (Simplified)
+    returns = trades_df['pnl']
+    if returns.std() != 0:
+        sharpe = (returns.mean() / returns.std()) * np.sqrt(len(trades_df))
+    else:
+        sharpe = 0.0
         
-    # Tier Stats
-    avg_score = trades_df['tier_score'].mean() if 'tier_score' in trades_df.columns else 0
-    t1_count = len(trades_df[trades_df['tier_type'] == 'Tier 1']) if 'tier_type' in trades_df.columns else 0
-    t2_count = len(trades_df[trades_df['tier_type'] == 'Tier 2']) if 'tier_type' in trades_df.columns else 0
+    # --- SCORING ANALYSIS FIX ---
+    # Helper to find column case-insensitively
+    def get_col_mean(df, targets):
+        cols_lower = [c.lower() for c in df.columns]
+        for t in targets:
+            # 1. Exact match
+            if t in df.columns:
+                return df[t].mean()
+            # 2. Case-insensitive match
+            if t.lower() in cols_lower:
+                idx = cols_lower.index(t.lower())
+                actual_col = df.columns[idx]
+                return df[actual_col].mean()
+        return 0.0
     
-    avg_htf = trades_df['score_htf'].mean() if 'score_htf' in trades_df.columns else 0
-    avg_disp = trades_df['score_disp'].mean() if 'score_disp' in trades_df.columns else 0
-    avg_liq = trades_df['score_liq'].mean() if 'score_liq' in trades_df.columns else 0
-    avg_ctxt = trades_df['score_ctxt'].mean() if 'score_ctxt' in trades_df.columns else 0
-        
+    # Note: 'tier_score' is usually lowercase in backtest.py
+    avg_score = get_col_mean(trades_df, ['tier_score', 'Tier_Score', 'score'])
+    
+    avg_htf = get_col_mean(trades_df, ['score_htf', 'Score_HTF'])
+    avg_disp = get_col_mean(trades_df, ['score_disp', 'Score_Disp'])
+    avg_liq = get_col_mean(trades_df, ['score_liq', 'Score_Liq'])
+    
+    # FIX: Added 'score_ctxt' to the list (this was the specific bug for Context)
+    avg_ctxt = get_col_mean(trades_df, ['score_ctxt', 'score_context', 'Score_Context']) 
+    
+    # Tier Counts - checking existence of column first
+    if 'tier_type' in trades_df.columns:
+        t1 = len(trades_df[trades_df['tier_type'] == 'Tier 1'])
+        t2 = len(trades_df[trades_df['tier_type'] == 'Tier 2'])
+    else:
+        t1 = 0
+        t2 = 0
+
     metrics = {
         'Total Trades': total_trades,
         'Win Rate (%)': round(win_rate, 2),
         'Total PnL ($)': round(total_pnl, 2),
-        'Return (%)': round(return_pct, 2),
+        'Return (%)': round(ret_pct, 2),
+        'Max Drawdown (%)': round(max_dd, 2),
+        'Sharpe Ratio': round(sharpe, 2),
         'Profit Factor': round(profit_factor, 2),
-        'Max Drawdown (%)': round(max_drawdown, 2),
-        'Sharpe Ratio': round(sharpe_ratio, 2),
-        'Expectancy ($)': round(expectancy, 2),
-        'Avg Win ($)': round(avg_win, 2),
-        'Avg Loss ($)': round(avg_loss, 2),
         'Avg Score': round(avg_score, 1),
-        'Tier 1 Trades': t1_count,
-        'Tier 2 Trades': t2_count,
         'Avg HTF': round(avg_htf, 1),
         'Avg Disp': round(avg_disp, 1),
         'Avg Liq': round(avg_liq, 1),
-        'Avg Ctxt': round(avg_ctxt, 1)
+        'Avg Ctxt': round(avg_ctxt, 1),
+        'Tier 1 Trades': t1,
+        'Tier 2 Trades': t2
     }
     
     return metrics

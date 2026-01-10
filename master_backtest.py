@@ -3,6 +3,8 @@ import os
 import sys
 import pandas as pd
 import glob
+import shutil
+from datetime import datetime
 
 # Add current directory to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -15,12 +17,10 @@ def load_config(config_path="config.yml"):
     with open(config_path, "r") as f:
         return yaml.safe_load(f)
 
-def check_data_exists(processed_dir, timeframe="1h"):
+def check_data_exists(processed_dir, start_date, end_date, timeframe="1h"):
     """
-    Check if we have processed files in the directory AND they have valid schema (Bid/Ask).
+    Check if processed files exist covering the requested date range with valid schema.
     """
-    # Filename convention: *_1hour_*.csv or *_1min_*.csv
-    # normalize timeframe: 1h -> 1hour
     tf_label = timeframe.replace('h', 'hour').replace('min', 'min')
     pattern = os.path.join(processed_dir, f"*_{tf_label}_*.csv")
     files = glob.glob(pattern)
@@ -28,9 +28,35 @@ def check_data_exists(processed_dir, timeframe="1h"):
     if not files:
         return False
         
-    # Validation: Check first file for Bid_Open
+    # Check Coverage
+    dates = []
+    for f in files:
+        try:
+            bn = os.path.basename(f)
+            # Expect INSTRUMENT_TF_YYYYMMDD.csv
+            d_str = bn.split('_')[-1].replace('.csv', '')
+            d = pd.to_datetime(d_str).date()
+            dates.append(d)
+        except:
+            continue
+            
+    if not dates:
+        return False
+        
+    min_found = min(dates)
+    max_found = max(dates)
+    
+    req_start = pd.to_datetime(start_date).date()
+    req_end = pd.to_datetime(end_date).date()
+    
+    if req_start < min_found or req_end > max_found:
+        print(f"Coverage Gap: Found {min_found} to {max_found}. Need {req_start} to {req_end}.")
+        return False
+        
+    # Validation: Check newest file for schema
+    files.sort()
     try:
-        df = pd.read_csv(files[0], nrows=1)
+        df = pd.read_csv(files[-1], nrows=1)
         if 'Bid_Open' not in df.columns:
             print(f"Data in {processed_dir} is outdated (missing Bid/Ask). Reprocessing...")
             return False
@@ -40,6 +66,43 @@ def check_data_exists(processed_dir, timeframe="1h"):
         return False
         
     return True
+
+def archive_previous_results(output_dir):
+    """
+    Move existing results to a timestamped archive folder.
+    """
+    if not os.path.exists(output_dir):
+        return
+        
+    # Check if there's anything to archive
+    items = os.listdir(output_dir)
+    if not items:
+        return
+        
+    # We only want to archive actual result files, not the 'archive' folder itself if it exists
+    items_to_move = [
+        i for i in items 
+        if i != "archive" and (i.endswith(".csv") or i == "charts")
+    ]
+    
+    if not items_to_move:
+        return
+        
+    # Create timestamped directory inside 'archive'
+    ts = datetime.now().strftime("%Y%m%d%H%M")
+    archive_root = os.path.join(output_dir, "archive")
+    target_dir = os.path.join(archive_root, ts)
+    
+    print(f"Archiving previous results to {target_dir}...")
+    os.makedirs(target_dir, exist_ok=True)
+    
+    for item in items_to_move:
+        src = os.path.join(output_dir, item)
+        dst = os.path.join(target_dir, item)
+        try:
+            shutil.move(src, dst)
+        except Exception as e:
+            print(f"Failed to move {item}: {e}")
 
 def main(force_process=False):
     print("=== Master Backtest Orchestrator ===")
@@ -54,6 +117,9 @@ def main(force_process=False):
     initial_balance = global_settings.get('initial_balance', 25000.0)
     base_output_dir = global_settings.get('output_base_dir', 'data/backtest_results')
     
+    # Archive previous runs before starting new one
+    archive_previous_results(base_output_dir)
+    
     charts_dir = os.path.join(base_output_dir, "charts")
     
     timeframe = data_settings.get('timeframe', '1h')
@@ -64,6 +130,9 @@ def main(force_process=False):
     summary_results = []
     
     for inst in instruments:
+        if not inst.get('enabled', True):
+            continue
+
         symbol = inst['symbol']
         input_file = inst['input_file']
         processed_dir = inst['processed_dir']
@@ -71,10 +140,18 @@ def main(force_process=False):
         print(f"\n--- Instrument: {symbol} ---")
         
         # 1. Data Processing Check
-        if force_process or not check_data_exists(processed_dir, timeframe):
-            print(f"Data missing or forced in {processed_dir}. Processing raw ticks...")
-            if not os.path.exists(input_file):
-                print(f"CRITICAL: Input file {input_file} not found. Skipping {symbol}.")
+        if force_process or not check_data_exists(processed_dir, start_date, end_date, timeframe):
+            print(f"Data missing or incomplete in {processed_dir}. Processing source...")
+            
+            # Check if input_file exists (file or dir) or pattern
+            has_input = False
+            if os.path.exists(input_file):
+                 has_input = True
+            elif glob.glob(input_file):
+                 has_input = True
+                 
+            if not has_input:
+                print(f"CRITICAL: Input source {input_file} not found. Skipping {symbol}.")
                 continue
                 
             process_data(input_file, processed_dir, symbol, [timeframe, '1D'])
@@ -101,7 +178,7 @@ def main(force_process=False):
             # Generate Visualization
             print(f"Generating charts for {symbol}...")
             inst_chart_dir = os.path.join(charts_dir, symbol)
-            # generate_dashboard(trades_df, inst_chart_dir, initial_balance) # Optional depending on speed
+            generate_dashboard(trades_df, inst_chart_dir, initial_balance, instrument=symbol)
         else:
             print(f"No trades generated for {symbol}.")
             # Initialize empty metrics for report

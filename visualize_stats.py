@@ -12,7 +12,7 @@ def load_config(config_path="config.yml"):
             return yaml.safe_load(f)
     return {}
 
-def plot_equity_curve(trades_df, initial_balance=25000.0, output_file='equity_curve.png'):
+def plot_equity_curve(trades_df, initial_balance=25000.0, output_file='equity_curve.png', instrument=None):
     trades_df = trades_df.sort_values('exit_time')
     trades_df['equity'] = initial_balance + trades_df['pnl'].cumsum()
     
@@ -26,7 +26,9 @@ def plot_equity_curve(trades_df, initial_balance=25000.0, output_file='equity_cu
     
     plt.figure(figsize=(12, 6))
     plt.plot(equity_series, label='Equity')
-    plt.title('Account Equity Curve')
+    
+    title = f'Account Equity Curve - {instrument}' if instrument else 'Account Equity Curve'
+    plt.title(title)
     plt.xlabel('Date')
     plt.ylabel('Balance ($)')
     plt.grid(True, alpha=0.3)
@@ -36,7 +38,7 @@ def plot_equity_curve(trades_df, initial_balance=25000.0, output_file='equity_cu
     print(f"Saved {output_file}")
     plt.close()
 
-def plot_monthly_heatmap(trades_df, output_file='monthly_heatmap.png'):
+def plot_monthly_heatmap(trades_df, output_file='monthly_heatmap.png', instrument=None):
     trades_df['exit_time'] = pd.to_datetime(trades_df['exit_time'])
     trades_df['Year'] = trades_df['exit_time'].dt.year
     trades_df['Month'] = trades_df['exit_time'].dt.month
@@ -51,13 +53,14 @@ def plot_monthly_heatmap(trades_df, output_file='monthly_heatmap.png'):
     except Exception as e:
         print(f"Heatmap error: {e}")
         
-    plt.title('Monthly PnL Heatmap ($)')
+    title = f'Monthly PnL Heatmap ($) - {instrument}' if instrument else 'Monthly PnL Heatmap ($)'
+    plt.title(title)
     plt.tight_layout()
     plt.savefig(output_file)
     print(f"Saved {output_file}")
     plt.close()
 
-def plot_drawdown(trades_df, initial_balance=25000.0, output_file='drawdown.png'):
+def plot_drawdown(trades_df, initial_balance=25000.0, output_file='drawdown.png', instrument=None):
     trades_df = trades_df.sort_values('exit_time')
     trades_df['equity'] = initial_balance + trades_df['pnl'].cumsum()
     trades_df['peak'] = trades_df['equity'].cummax()
@@ -66,7 +69,9 @@ def plot_drawdown(trades_df, initial_balance=25000.0, output_file='drawdown.png'
     plt.figure(figsize=(12, 4))
     plt.fill_between(trades_df['exit_time'], trades_df['drawdown_pct'], 0, color='red', alpha=0.3)
     plt.plot(trades_df['exit_time'], trades_df['drawdown_pct'], color='red', linewidth=1)
-    plt.title('Drawdown (%)')
+    
+    title = f'Drawdown (%) - {instrument}' if instrument else 'Drawdown (%)'
+    plt.title(title)
     plt.ylabel('Drawdown %')
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
@@ -74,7 +79,7 @@ def plot_drawdown(trades_df, initial_balance=25000.0, output_file='drawdown.png'
     print(f"Saved {output_file}")
     plt.close()
 
-def generate_dashboard(trades_df, output_dir, initial_balance=None):
+def generate_dashboard(trades_df, output_dir, initial_balance=None, instrument=None):
     """
     Generate all charts for a set of trades.
     """
@@ -90,9 +95,9 @@ def generate_dashboard(trades_df, output_dir, initial_balance=None):
     
     trades_df['exit_time'] = pd.to_datetime(trades_df['exit_time'])
     
-    plot_equity_curve(trades_df, initial_balance, os.path.join(output_dir, 'equity_curve.png'))
-    plot_drawdown(trades_df, initial_balance, os.path.join(output_dir, 'drawdown.png'))
-    plot_monthly_heatmap(trades_df, os.path.join(output_dir, 'monthly_heatmap.png'))
+    plot_equity_curve(trades_df, initial_balance, os.path.join(output_dir, 'equity_curve.png'), instrument=instrument)
+    plot_drawdown(trades_df, initial_balance, os.path.join(output_dir, 'drawdown.png'), instrument=instrument)
+    plot_monthly_heatmap(trades_df, os.path.join(output_dir, 'monthly_heatmap.png'), instrument=instrument)
 
 def main():
     parser = argparse.ArgumentParser()

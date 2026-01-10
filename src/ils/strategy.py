@@ -183,16 +183,22 @@ def run_strategy(df: pd.DataFrame, account_equity: float = 10000.0, htf_bias = '
         signal_detected = False
         direction = None
         
-        # Valid MSS requires: Prior Liquidity Sweep + Valid Displacement
-        # Bearish Setup:
-        if row['Sweep_Bearish'] and row['Displacement_Bearish']:
-            signal_detected = True
-            direction = 'Short'
-            
+        # Valid MSS requires: Prior Liquidity Sweep + Valid Displacement (Allowing 5 bar lag)
+        
+        # Bearish Setup
+        if row['Displacement_Bearish']:
+            # Check for recent Bearish Sweep
+            start_idx = max(0, i - 5)
+            if df['Sweep_Bearish'].iloc[start_idx:i+1].any():
+                signal_detected = True
+                direction = 'Short'
+                
         # Bullish Setup
-        elif row['Sweep_Bullish'] and row['Displacement_Bullish']:
-            signal_detected = True
-            direction = 'Long'
+        elif row['Displacement_Bullish']:
+            start_idx = max(0, i - 5)
+            if df['Sweep_Bullish'].iloc[start_idx:i+1].any():
+                 signal_detected = True
+                 direction = 'Long'
             
         if signal_detected:
             # Prepare row for scoring

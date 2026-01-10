@@ -60,7 +60,7 @@ class TradeManager:
             'score_htf': s_htf,
             'score_disp': s_disp,
             'score_liq': s_liq,
-            'score_ctxt': s_ctxt,
+            'score_context': s_ctxt,
             'entry_price': exec_price, # Actual fill
             'planned_entry': mid, # Signal price
             'stop_loss': signal_row['Stop_Loss'],
