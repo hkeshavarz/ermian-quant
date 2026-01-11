@@ -1,8 +1,8 @@
 import pandas as pd
 import numpy as np
 from datetime import time
-from .indicators import calculate_atr, calculate_chop_index, find_swings_fractal, calculate_adx
-from .smc import detect_fvg, detect_liquidity_sweeps, detect_order_blocks, validate_displacement
+from .indicators import calculate_atr, calculate_chop_index, find_swings_fractal, calculate_adx, find_swings_adaptive
+from .smc import detect_fvg, detect_liquidity_sweeps, detect_order_blocks, validate_displacement, validate_mss
 from .risk import get_risk_percentage, calculate_position_size
 
 def check_killzone(timestamp) -> bool:
@@ -28,85 +28,132 @@ def check_killzone(timestamp) -> bool:
         
     return False
 
-def calculate_confluence_score(row, htf_bias: str = 'Neutral'):
+def calculate_confluence_score(row, htf_bias: str = 'Neutral', scoring_config: dict = None):
     """
-    Calculate Tiered Score (0-100) based on ILS 3.0 factors.
+    Calculate Tiered Score (0-100) based on Configurable weights.
     Returns (score, breakdown_dict).
     """
+    if scoring_config is None:
+        scoring_config = {
+            'htf_alignment': 25, 'htf_poi': 15, 'displacement': 10,
+            'fvg_clean': 10, 'liquidity_sweep': 15, 'killzone': 10, 'chop_filter': 5
+        }
+        
     score = 0
     breakdown = {'Score_HTF': 0, 'Score_Disp': 0, 'Score_Liq': 0, 'Score_Context': 0}
     
-    # 1. HTF Alignment (Max 40)
-    # Bias aligned: +25
+    # 1. HTF Alignment
+    w_htf = scoring_config.get('htf_alignment', 25)
     if htf_bias == 'Bullish' and row.get('Signal') == 'Long':
-        score += 25
-        breakdown['Score_HTF'] += 25
+        score += w_htf
+        breakdown['Score_HTF'] += w_htf
     elif htf_bias == 'Bearish' and row.get('Signal') == 'Short':
-        score += 25
-        breakdown['Score_HTF'] += 25
+        score += w_htf
+        breakdown['Score_HTF'] += w_htf
         
-    # HTF POI: +15
+    # HTF POI
+    w_poi = scoring_config.get('htf_poi', 15)
     if row.get('Near_POI', False):
-        score += 15
-        breakdown['Score_HTF'] += 15
+        score += w_poi
+        breakdown['Score_HTF'] += w_poi
     
-    # 2. Displacement (Max 20)
-    # Strong Displacement: +10
-    score += 10
-    breakdown['Score_Disp'] += 10
+    # 2. Displacement
+    w_disp = scoring_config.get('displacement', 10)
+    score += w_disp
+    breakdown['Score_Disp'] += w_disp
     
-    # Clean FVG: +10
+    # Clean FVG
+    w_fvg = scoring_config.get('fvg_clean', 10)
     if row.get('Signal') == 'Long' and row.get('FVG_Bullish'):
-        score += 10
-        breakdown['Score_Disp'] += 10
+        score += w_fvg
+        breakdown['Score_Disp'] += w_fvg
     elif row.get('Signal') == 'Short' and row.get('FVG_Bearish'):
-        score += 10
-        breakdown['Score_Disp'] += 10
+        score += w_fvg
+        breakdown['Score_Disp'] += w_fvg
     
-    # 3. Liquidity (Max 25)
-    # HTF Sweep/Inducement
+    # 3. Liquidity
+    w_sweep = scoring_config.get('liquidity_sweep', 15)
     if row.get('Sweep_Bullish') or row.get('Sweep_Bearish'):
-        score += 15
-        breakdown['Score_Liq'] += 15
+        score += w_sweep
+        breakdown['Score_Liq'] += w_sweep
 
-    # 4. Context (Max 15)
-    # Killzone timing: +10
+    # 4. Context
+    w_kz = scoring_config.get('killzone', 10)
     if row.get('In_Killzone', False):
-        score += 10
-        breakdown['Score_Context'] += 10
+        score += w_kz
+        breakdown['Score_Context'] += w_kz
     
-    # CHOP < 50: +5 (Trendiness)
+    # CHOP Filter
+    w_chop = scoring_config.get('chop_filter', 5)
     if 'Chop' in row and row['Chop'] < 50:
-        score += 5
-        breakdown['Score_Context'] += 5
+        score += w_chop
+        breakdown['Score_Context'] += w_chop
         
     return score, breakdown
 
-def run_strategy(df: pd.DataFrame, account_equity: float = 10000.0, htf_bias = 'Neutral') -> pd.DataFrame:
+def run_strategy(df: pd.DataFrame, account_equity: float = 10000.0, htf_bias = 'Neutral', config: dict = None) -> pd.DataFrame:
     """
-    Run the ILS 3.0 Strategy on a dataframe.
-    htf_bias: str or pd.Series/list aligned with df index.
+    Run the ILS 3.0 Strategy on a dataframe using Configurable Parameters.
     """
+    if config is None:
+        config = {}
+        
+    # Extract configs
+    ind_cfg = config.get('indicators', {})
+    smc_cfg = config.get('smc', {})
+    adapt_cfg = config.get('adaptive', {})
+    score_cfg = config.get('scoring', {})
+    risk_cfg = config.get('risk', {})
+    
     # 1. Indicators
-    df['ATR'] = calculate_atr(df, period=14)
-    df['Chop'] = calculate_chop_index(df)
-    df['ADX'] = calculate_adx(df)
+    atr_fast_p = ind_cfg.get('atr_fast', 14)
+    atr_slow_p = ind_cfg.get('atr_slow', 100)
+    chop_p = ind_cfg.get('chop_period', 14)
+    adx_p = ind_cfg.get('adx_period', 14)
+    
+    df['ATR'] = calculate_atr(df, period=atr_fast_p)
+    df['ATR_100'] = calculate_atr(df, period=atr_slow_p)
+    df['Chop'] = calculate_chop_index(df, period=chop_p)
+    df['ADX'] = calculate_adx(df, period=adx_p)
     
     # 2. SMC Detection
-    fvg_df = detect_fvg(df, atr_col='ATR')
+    fvg_df = detect_fvg(df, atr_threshold_multiplier=smc_cfg.get('fvg_threshold', 0.5), atr_col='ATR')
     df = df.join(fvg_df)
     
     # Displacement
-    disp_df = validate_displacement(df, atr_col='ATR')
+    disp_df = validate_displacement(df, atr_col='ATR', 
+                                    body_ratio_min=smc_cfg.get('disp_body_ratio', 0.6),
+                                    range_atr_min=smc_cfg.get('disp_range_atr', 1.5))
     df = df.join(disp_df)
     
-    # Swings needed for OB and Sweeps
-    swings_df = find_swings_fractal(df) # Should ideally be adaptive, using default for now
+    # Adaptive Swings (Section 8)
+    base_lb = adapt_cfg.get('base_lookback', 5)
+    min_lb = adapt_cfg.get('min_lookback', 3)
+    max_lb = adapt_cfg.get('max_lookback', 10)
     
-    sweeps_df = detect_liquidity_sweeps(df, swing_lookback=5, atr_col='ATR')
+    # User override via swing_lookback
+    sl_cfg = adapt_cfg.get('swing_lookback', {})
+    if sl_cfg:
+        base_lb = sl_cfg.get('htf', base_lb)
+        min_lb = sl_cfg.get('ltf', min_lb)
+    
+    atr_ratio = df['ATR'] / df['ATR_100'].replace(0, np.nan)
+    lookback_series = (base_lb * atr_ratio).fillna(base_lb).round()
+    lookback_series = lookback_series.clip(lower=min_lb, upper=max_lb)
+    df['L_Adaptive'] = lookback_series
+    
+    swings_df = find_swings_adaptive(df, lookback_series) 
+    
+    # Sweeps
+    sweeps_df = detect_liquidity_sweeps(df, swings_df, atr_col='ATR', 
+                                        sweep_atr_tolerance=smc_cfg.get('sweep_atr', 0.2))
     df = df.join(sweeps_df)
     
-    ob_df = detect_order_blocks(df, fvg_df, swings_df)
+    # MSS Validation
+    mss_df = validate_mss(df, swings_df)
+    df = df.join(mss_df)
+    
+    ob_df = detect_order_blocks(df, fvg_df, swings_df, volume_factor=smc_cfg.get('ob_volume_factor', 1.0))
     df = df.join(ob_df)
     
     # 3. Signals & Scoring
@@ -124,7 +171,6 @@ def run_strategy(df: pd.DataFrame, account_equity: float = 10000.0, htf_bias = '
     results['HTF_Bias'] = htf_bias
     
     # Killzones
-    # Ensure index is datetime
     if not isinstance(df.index, pd.DatetimeIndex):
         try:
             df.index = pd.to_datetime(df.index)
@@ -138,8 +184,14 @@ def run_strategy(df: pd.DataFrame, account_equity: float = 10000.0, htf_bias = '
     active_bull_obs = [] 
     active_bear_obs = []
     
+    active_bull_fvgs = [] 
+    active_bear_fvgs = []
+    
+    chop_regime_thresh = score_cfg.get('chop_regime_threshold', 61.8)
+    adx_regime_thresh = score_cfg.get('adx_regime_threshold', 20)
+    
     for i in range(len(df)):
-        if i < 100: continue # Warmup
+        if i < 100: continue
         
         row = df.iloc[i]
         
@@ -149,23 +201,29 @@ def run_strategy(df: pd.DataFrame, account_equity: float = 10000.0, htf_bias = '
         if row['OB_Bearish']:
             active_bear_obs.append({'top': row['High'], 'bottom': row['Low']})
             
-        # 2. Check Near POI & Invalidation
+        # 2. Update Active FVGs
+        if row['FVG_Bullish']:
+            active_bull_fvgs.append({'top': row['FVG_Top'], 'bottom': row['FVG_Bottom']})
+        if row['FVG_Bearish']:
+            active_bear_fvgs.append({'top': row['FVG_Top'], 'bottom': row['FVG_Bottom']})
+            
+        # Filter invalidated FVGs
+        active_bull_fvgs = [f for f in active_bull_fvgs if row['Close'] >= f['bottom']]
+        active_bear_fvgs = [f for f in active_bear_fvgs if row['Close'] <= f['top']]
+
+        # 3. Check Near POI
         near_poi = False
         
         # Bullish OBs
-        # Keep valid: Close >= bottom
-        # Near: Low <= top
         next_active_bull = []
         for ob in active_bull_obs:
-            if row['Close'] >= ob['bottom']:
+            if row['Close'] >= ob['bottom']: 
                 next_active_bull.append(ob)
                 if row['Low'] <= ob['top']:
                     near_poi = True
         active_bull_obs = next_active_bull
         
         # Bearish OBs
-        # Keep valid: Close <= top
-        # Near: High >= bottom
         next_active_bear = []
         for ob in active_bear_obs:
             if row['Close'] <= ob['top']:
@@ -176,40 +234,44 @@ def run_strategy(df: pd.DataFrame, account_equity: float = 10000.0, htf_bias = '
         
         results.at[df.index[i], 'Near_POI'] = near_poi
         
-        # Regime Filter: If CHOP > 61.8 AND ADX < 20 -> NO TRADING
-        if row['Chop'] > 61.8 and row['ADX'] < 20:
+        # Regime Filter
+        # If High Chop AND Low ADX -> Skip
+        if row['Chop'] > chop_regime_thresh and row['ADX'] < adx_regime_thresh:
             continue
             
         signal_detected = False
         direction = None
         
-        # Valid MSS requires: Prior Liquidity Sweep + Valid Displacement (Allowing 5 bar lag)
+        # New Logic: Sweep -> Displacement -> MSS
         
-        # Bearish Setup
-        if row['Displacement_Bearish']:
-            # Check for recent Bearish Sweep
-            start_idx = max(0, i - 5)
-            if df['Sweep_Bearish'].iloc[start_idx:i+1].any():
+        # SMC Toggles
+        choch_req = smc_cfg.get('choch_required', True)
+        
+        # Check MSS (CHoCH)
+        has_mss_bear = row['MSS_Bearish'] if choch_req else True
+        has_mss_bull = row['MSS_Bullish'] if choch_req else True
+        
+        if row['Displacement_Bearish'] and has_mss_bear:
+            lookback = 10
+            if df['Sweep_Bearish'].iloc[max(0, i-lookback):i+1].any():
                 signal_detected = True
                 direction = 'Short'
                 
-        # Bullish Setup
-        elif row['Displacement_Bullish']:
-            start_idx = max(0, i - 5)
-            if df['Sweep_Bullish'].iloc[start_idx:i+1].any():
+        elif row['Displacement_Bullish'] and has_mss_bull:
+            lookback = 10
+            if df['Sweep_Bullish'].iloc[max(0, i-lookback):i+1].any():
                  signal_detected = True
                  direction = 'Long'
             
         if signal_detected:
-            # Prepare row for scoring
             row_dict = row.to_dict()
             row_dict['Signal'] = direction
             row_dict['Near_POI'] = near_poi
             
             curr_bias = results.at[df.index[i], 'HTF_Bias']
-            score, breakdown = calculate_confluence_score(row_dict, curr_bias)
+            score, breakdown = calculate_confluence_score(row_dict, curr_bias, scoring_config=score_cfg)
             
-            risk_pct = get_risk_percentage(score)
+            risk_pct = get_risk_percentage(score, risk_config=risk_cfg)
             
             if risk_pct > 0:
                 results.at[df.index[i], 'Signal'] = direction
@@ -219,22 +281,26 @@ def run_strategy(df: pd.DataFrame, account_equity: float = 10000.0, htf_bias = '
                 results.at[df.index[i], 'Score_Liq'] = breakdown['Score_Liq']
                 results.at[df.index[i], 'Score_Context'] = breakdown['Score_Context']
                 
-                # Execution details
+                # Execution
                 entry_price = row['Close']
                 atr_val = row['ATR']
                 
                 if direction == 'Long':
                     stop_loss = row['Low'] - (1.5 * atr_val)
-                    risk = entry_price - stop_loss
-                    take_profit = entry_price + (risk * 3.0) 
                 else:
                     stop_loss = row['High'] + (1.5 * atr_val)
-                    risk = stop_loss - entry_price
-                    take_profit = entry_price - (risk * 3.0) 
                 
                 dist = abs(entry_price - stop_loss)
+                # Risk Units
                 units = calculate_position_size(account_equity, risk_pct, dist)
+                risk_amt = dist * units # Approx risk amount
                 
+                # TP
+                if direction == 'Long':
+                     take_profit = entry_price + (3.0 * dist)
+                else:
+                     take_profit = entry_price - (3.0 * dist)
+                     
                 results.at[df.index[i], 'Entry_Price'] = entry_price
                 results.at[df.index[i], 'Stop_Loss'] = stop_loss
                 results.at[df.index[i], 'Take_Profit'] = take_profit

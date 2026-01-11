@@ -21,6 +21,50 @@ def calculate_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     atr = tr.rolling(window=period).mean() 
     return atr
 
+def find_swings_adaptive(df: pd.DataFrame, lookback_series: pd.Series) -> pd.DataFrame:
+    """
+    Identify fractal swing highs and lows using a dynamic lookback.
+    Returns DataFrame with 'SwingHigh' and 'SwingLow' columns representing
+    the most recent CONFIRMED swing points known at index `i`.
+    """
+    high = df['High'].values
+    low = df['Low'].values
+    lb_vals = lookback_series.fillna(5).astype(int).values
+    
+    n = len(df)
+    
+    last_confirmed_high = np.nan
+    last_confirmed_low = np.nan
+    
+    out_highs = np.full(n, np.nan)
+    out_lows = np.full(n, np.nan)
+    
+    for i in range(n):
+        # 1. Check if we confirm a new swing at this bar
+        L = lb_vals[i]
+        if L < 2: L = 2
+        
+        center_idx = i - L
+        if center_idx >= 0:
+            start = center_idx - L
+            end = i + 1
+            if start < 0: start = 0
+            
+            if high[center_idx] == np.max(high[start:end]):
+                last_confirmed_high = high[center_idx]
+                
+            if low[center_idx] == np.min(low[start:end]):
+                last_confirmed_low = low[center_idx]
+        
+        # 2. Store current knowledge
+        out_highs[i] = last_confirmed_high
+        out_lows[i] = last_confirmed_low
+            
+    res = pd.DataFrame(index=df.index)
+    res['SwingHigh'] = out_highs
+    res['SwingLow'] = out_lows
+    return res
+
 def calculate_chop_index(df: pd.DataFrame, period: int = 14) -> pd.Series:
     """
     Calculate Choppiness Index.

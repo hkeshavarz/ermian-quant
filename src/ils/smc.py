@@ -2,11 +2,11 @@ import pandas as pd
 import numpy as np
 from .indicators import calculate_atr, find_swings_fractal
 
-def validate_displacement(df: pd.DataFrame, atr_col: str = 'ATR') -> pd.DataFrame:
+def validate_displacement(df: pd.DataFrame, atr_col: str = 'ATR', body_ratio_min: float = 0.6, range_atr_min: float = 1.5) -> pd.DataFrame:
     """
-    Validate Displacement Candles based on 3.0 spec:
-    - Body / Range >= 0.6
-    - Range >= 1.5 * ATR
+    Validate Displacement Candles based on Configurable spec:
+    - Body / Range >= body_ratio_min
+    - Range >= range_atr_min * ATR
     - Bearish: Close in bottom 30%
     - Bullish: Close in top 30%
     """
@@ -22,8 +22,8 @@ def validate_displacement(df: pd.DataFrame, atr_col: str = 'ATR') -> pd.DataFram
     # Avoid zero division
     body_ratio = body_size / candle_range.replace(0, np.inf)
     
-    range_condition = candle_range >= (1.5 * atr)
-    body_condition = body_ratio >= 0.6
+    range_condition = candle_range >= (range_atr_min * atr)
+    body_condition = body_ratio >= body_ratio_min
     
     # Directional close
     # High - Low is range. 
@@ -43,7 +43,7 @@ def validate_displacement(df: pd.DataFrame, atr_col: str = 'ATR') -> pd.DataFram
 def detect_fvg(df: pd.DataFrame, atr_threshold_multiplier: float = 0.5, atr_col: str = 'ATR') -> pd.DataFrame:
     """
     Detect Fair Value Gaps (FVG) based on 3-candle logic.
-    Strict size filter: Gap >= 0.5 * ATR14
+    Strict size filter: Gap >= atr_threshold_multiplier * ATR14
     """
     high = df['High']
     low = df['Low']
@@ -73,55 +73,59 @@ def detect_fvg(df: pd.DataFrame, atr_threshold_multiplier: float = 0.5, atr_col:
     
     return result
 
-def detect_liquidity_sweeps(df: pd.DataFrame, swing_lookback: int = 5, atr_col: str = 'ATR') -> pd.DataFrame:
+def detect_liquidity_sweeps(df: pd.DataFrame, swings_df: pd.DataFrame, atr_col: str = 'ATR', sweep_atr_tolerance: float = 0.2) -> pd.DataFrame:
     """
     Detect Liquidity Sweeps (Turtle Soup).
-    Bearish Sweep:
-      - High > SwingHigh
-      - Close <= SwingHigh + 0.2 * ATR
-    Bullish Sweep:
-      - Low < SwingLow
-      - Close >= SwingLow - 0.2 * ATR
+    Uses pre-calculated `swings_df` which contains the 'Active Swing Level' for each bar.
+    Tolerance: +/- sweep_atr_tolerance * ATR.
     """
-    swings = find_swings_fractal(df, lookback=swing_lookback)
     atr = df[atr_col] if atr_col in df.columns else pd.Series(0, index=df.index)
     
     sweeps = pd.DataFrame(index=df.index)
     sweeps['Sweep_Bullish'] = False
     sweeps['Sweep_Bearish'] = False
     
-    last_swing_high = -np.inf
-    last_swing_low = np.inf
-    
     high = df['High'].values
     low = df['Low'].values
     close = df['Close'].values
     atr_vals = atr.values
     
-    swing_highs = swings['SwingHigh'].values
-    swing_lows = swings['SwingLow'].values
+    swing_highs = swings_df['SwingHigh'].values
+    swing_lows = swings_df['SwingLow'].values
     
     res_bull = np.zeros(len(df), dtype=bool)
     res_bear = np.zeros(len(df), dtype=bool)
 
-    for i in range(len(df)):
-        confirmed_idx = i - swing_lookback
-        if confirmed_idx >= 0:
-            if not np.isnan(swing_highs[confirmed_idx]):
-                last_swing_high = swing_highs[confirmed_idx]
-            if not np.isnan(swing_lows[confirmed_idx]):
-                last_swing_low = swing_lows[confirmed_idx]
+    for i in range(1, len(df)):
+        # Active Swing Levels
+        last_swing_high = swing_highs[i]
+        last_swing_low = swing_lows[i]
         
-        # Bearish Sweep Logic
-        if last_swing_high > -np.inf:
-            threshold = last_swing_high + (0.2 * atr_vals[i])
-            if high[i] > last_swing_high and close[i] <= threshold:
+        # Bearish Logic
+        if not np.isnan(last_swing_high):
+            threshold = last_swing_high + (sweep_atr_tolerance * atr_vals[i])
+            
+            # 1. Wick Sweep
+            if high[i] > last_swing_high and close[i] <= threshold: 
+                 if close[i] < last_swing_high:
+                     res_bear[i] = True
+            
+            # 2. Delayed Sweep (Fakeout)
+            # Prev candle closed ABOVE, Current candle closes BELOW
+            if close[i-1] > last_swing_high and close[i] < last_swing_high:
                 res_bear[i] = True
         
-        # Bullish Sweep Logic
-        if last_swing_low < np.inf:
-            threshold = last_swing_low - (0.2 * atr_vals[i])
-            if low[i] < last_swing_low and close[i] >= threshold:
+        # Bullish Logic
+        if not np.isnan(last_swing_low):
+            threshold = last_swing_low - (sweep_atr_tolerance * atr_vals[i])
+            
+            # 1. Wick Sweep
+            if low[i] < last_swing_low and close[i] > last_swing_low:
+                res_bull[i] = True
+                
+            # 2. Delayed Sweep
+            # Prev candle closed BELOW, Current candle closes ABOVE
+            if close[i-1] < last_swing_low and close[i] > last_swing_low:
                 res_bull[i] = True
                 
     sweeps['Sweep_Bullish'] = res_bull
@@ -129,17 +133,21 @@ def detect_liquidity_sweeps(df: pd.DataFrame, swing_lookback: int = 5, atr_col: 
     
     return sweeps
 
-def detect_order_blocks(df: pd.DataFrame, fvg_df: pd.DataFrame, swings_df: pd.DataFrame) -> pd.DataFrame:
+def validate_mss(df: pd.DataFrame, swings_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Detect Order Blocks (OB).
-    Bullish OB: Last down-close candle before a move that:
-       1. Created a Bullish FVG.
-       2. Broke a Swing High (MSS).
-    Bearish OB: Last up-close candle before a move that:
-       1. Created a Bearish FVG.
-       2. Broke a Swing Low (MSS).
-       
-    Returns DataFrame with 'OB_Bullish', 'OB_Bearish' booleans.
+    Validate Market Structure Shift (MSS).
+    Simplified Vectorized Check against Active Swing Levels.
+    """
+    res = pd.DataFrame(index=df.index)
+    # Check if Close breaks the Swing Level
+    # Note: swings_df is already aligned so that row i contains the swing active for row i.
+    res['MSS_Bullish'] = (df['Close'] > swings_df['SwingHigh'])
+    res['MSS_Bearish'] = (df['Close'] < swings_df['SwingLow'])
+    return res
+
+def detect_order_blocks(df: pd.DataFrame, fvg_df: pd.DataFrame, swings_df: pd.DataFrame, volume_factor: float = 1.0) -> pd.DataFrame:
+    """
+    Detect Order Blocks (OB) with Volume Confirmation.
     """
     ob_bull = pd.Series(False, index=df.index)
     ob_bear = pd.Series(False, index=df.index)
@@ -147,66 +155,77 @@ def detect_order_blocks(df: pd.DataFrame, fvg_df: pd.DataFrame, swings_df: pd.Da
     # We need access to values for speed
     close = df['Close'].values
     open_ = df['Open'].values
-    high = df['High'].values
-    low = df['Low'].values
+    
+    # Volume Check
+    check_vol = False
+    vol_vals = None
+    vol_sma = None
+    if 'Volume' in df.columns:
+        check_vol = True
+        vol_vals = df['Volume'].values
+        # Simple fillna for SMA
+        vol_sma = df['Volume'].rolling(20).mean().fillna(0).values
     
     # FVG flags
     has_fvg_bull = fvg_df['FVG_Bullish'].values
     has_fvg_bear = fvg_df['FVG_Bearish'].values
     
-    # Swings
+    # Swings (Active Levels)
     swing_highs = swings_df['SwingHigh'].values 
     swing_lows = swings_df['SwingLow'].values 
     
     for i in range(3, len(df)):
         # Check Bullish OB Condition
         if has_fvg_bull[i]:
-            # This FVG implies a move from i-2 to i.
+            # This FVG implies a move from i-2 to i caused FVG.
             # Did this move break structure?
+            # We check if Close[i] broke the active Swing High.
+            
             valid_break = False
-            prev_swing_idx = -1
+            last_idx = i # or i-1? 
+            # The break usually happens on the displacement candle (i-1) or the FVG candle (i).
+            # The FVG logic says FVG is at i (gap between i-2 and i).
+            # The move is the Green candle at i-1.
+            # So usually we check if Close[i-1] broke structure? 
+            # OR if Close[i] is holding above?
+            # Standard: The displacement candle (i-1) should break structure.
+            # But sometimes the follow through (i) confirms it.
+            # Let's check Close[i] (current) and Close[i-1] (displacement).
+            # If either broke the structure that was active THEN.
             
-            # Look back for a swing high
-            for k in range(i-3, max(0, i-50), -1):
-                if not np.isnan(swing_highs[k]):
-                    prev_swing_idx = k
-                    break
+            active_high = swing_highs[i] 
             
-            if prev_swing_idx != -1:
-                # If Close of break candle (i) > Swing High
-                if close[i] > high[prev_swing_idx]:
-                    valid_break = True
-            
+            if not np.isnan(active_high):
+                 if close[i] > active_high: 
+                     valid_break = True
+                     
             if valid_break:
                 # Find the Origin Candle (last Down candle before i-2)
-                # Scan back from i-2
                 origin_idx = -1
                 for k in range(i-2, max(0, i-10), -1):
-                     # Down candle
                      if close[k] < open_[k]:
                          origin_idx = k
                          break
                 
                 if origin_idx != -1:
-                    ob_bull.iloc[origin_idx] = True
+                    is_valid_ob = True
+                    if check_vol:
+                         if vol_vals[origin_idx] <= (vol_sma[origin_idx] * volume_factor):
+                             is_valid_ob = False
+                             
+                    if is_valid_ob:
+                        ob_bull.iloc[origin_idx] = True
 
         # Check Bearish OB Condition
         if has_fvg_bear[i]:
             valid_break = False
-            prev_swing_idx = -1
+            active_low = swing_lows[i]
             
-            for k in range(i-3, max(0, i-50), -1):
-                if not np.isnan(swing_lows[k]):
-                    prev_swing_idx = k
-                    break
-            
-            if prev_swing_idx != -1:
-                # Break Low
-                if close[i] < low[prev_swing_idx]:
+            if not np.isnan(active_low):
+                if close[i] < active_low:
                     valid_break = True
             
             if valid_break:
-                # Find Origin (Last Up candle)
                 origin_idx = -1
                 for k in range(i-2, max(0, i-10), -1):
                     if close[k] > open_[k]:
@@ -214,7 +233,13 @@ def detect_order_blocks(df: pd.DataFrame, fvg_df: pd.DataFrame, swings_df: pd.Da
                         break
                 
                 if origin_idx != -1:
-                    ob_bear.iloc[origin_idx] = True
+                    is_valid_ob = True
+                    if check_vol:
+                         if vol_vals[origin_idx] <= (vol_sma[origin_idx] * volume_factor):
+                             is_valid_ob = False
+                             
+                    if is_valid_ob:
+                        ob_bear.iloc[origin_idx] = True
                     
     result = pd.DataFrame(index=df.index)
     result['OB_Bullish'] = ob_bull

@@ -5,13 +5,17 @@ import pandas as pd
 import glob
 import shutil
 from datetime import datetime
+import datetime as dt
 
 # Add current directory to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from process_data import process_data
-from backtest_runner import run_backtest_engine
+from backtest_runner import load_data, load_daily_bias
 from visualize_stats import generate_dashboard
+from src.ils.portfolio import PortfolioManager
+from src.ils.strategy import run_strategy
+from src.ils.metrics import calculate_metrics
 
 def load_config(config_path="config.yml"):
     with open(config_path, "r") as f:
@@ -60,8 +64,8 @@ def check_data_exists(processed_dir, start_date, end_date, timeframe="1h"):
         if 'Bid_Open' not in df.columns:
             print(f"Data in {processed_dir} is outdated (missing Bid/Ask). Reprocessing...")
             return False
-        if 'Volume' not in df.columns:
-            return False
+            if 'Volume' not in df.columns:
+                return False
     except:
         return False
         
@@ -105,8 +109,12 @@ def archive_previous_results(output_dir):
             print(f"Failed to move {item}: {e}")
 
 def main(force_process=False):
-    print("=== Master Backtest Orchestrator ===")
+    print("=== Master Backtest Orchestrator (Portfolio Mode) ===")
     config = load_config()
+    
+    # Phase 8: Environment & Timeframe
+    env = config.get('environment', 'backtest')
+    print(f"Environment: {env.upper()}")
     
     global_settings = config.get('backtest', {})
     data_settings = config.get('data', {})
@@ -122,12 +130,22 @@ def main(force_process=False):
     
     charts_dir = os.path.join(base_output_dir, "charts")
     
-    timeframe = data_settings.get('timeframe', '1h')
+    # Phase 8: Execution Timeframe
+    tf_list = config.get('timeframes', {}).get('execution', [])
+    if tf_list:
+        timeframe = tf_list[0]
+        print(f"Using Primary Execution Timeframe: {timeframe}")
+    else:
+        timeframe = data_settings.get('timeframe', '1h')
     
     os.makedirs(base_output_dir, exist_ok=True)
     os.makedirs(charts_dir, exist_ok=True)
     
-    summary_results = []
+    # --- PHASE 1: Data Loading & Signal Generation ---
+    print("\n--- Phase 1: Signal Gathering ---")
+    market_data = {} # {symbol: df}
+    daily_biases = {} # {symbol: map}
+    all_signals = [] 
     
     for inst in instruments:
         if not inst.get('enabled', True):
@@ -137,91 +155,161 @@ def main(force_process=False):
         input_file = inst['input_file']
         processed_dir = inst['processed_dir']
         
-        print(f"\n--- Instrument: {symbol} ---")
+        print(f"Processing {symbol}...")
         
-        # 1. Data Processing Check
+        # 1. Check Data
         if force_process or not check_data_exists(processed_dir, start_date, end_date, timeframe):
-            print(f"Data missing or incomplete in {processed_dir}. Processing source...")
-            
-            # Check if input_file exists (file or dir) or pattern
-            has_input = False
-            if os.path.exists(input_file):
-                 has_input = True
-            elif glob.glob(input_file):
-                 has_input = True
-                 
-            if not has_input:
+             print(f"Data gap for {symbol}, processing source...")
+             has_input = False
+             if os.path.exists(input_file) or glob.glob(input_file):
+                  has_input = True
+             if not has_input:
                 print(f"CRITICAL: Input source {input_file} not found. Skipping {symbol}.")
                 continue
-                
-            process_data(input_file, processed_dir, symbol, [timeframe, '1D'])
-        else:
-            print(f"Data found in {processed_dir}. Skipping processing.")
-            
-        # 2. Run Backtest
-        print(f"Running Backtest ({start_date} to {end_date})...")
-        trades_df, metrics = run_backtest_engine(
-            instrument=symbol,
-            start_date=start_date,
-            end_date=end_date,
-            data_dir=processed_dir,
-            initial_balance=initial_balance,
-            timeframe=timeframe
-        )
+             process_data(input_file, processed_dir, symbol, [timeframe, '1D'])
 
-        if not trades_df.empty:
-            # Save results to centralized folder
+        # 2. Load Data
+        df = load_data(processed_dir, symbol, start_date, end_date, timeframe)
+        if df.empty:
+            print(f"No data loaded for {symbol}")
+            continue
+            
+        # 3. Load Bias
+        bias_map = load_daily_bias(processed_dir, symbol)
+        bias_series = []
+        for idx in df.index:
+            prev_day = (idx.date() - dt.timedelta(days=1))
+            b = bias_map.get(prev_day, 'Neutral')
+            bias_series.append(b)
+
+        # 4. Generate Raw Signals
+        # Note: We pass default equity because sizing is ignored here
+        print(f"Generating signals for {symbol}...")
+        results_df = run_strategy(df, account_equity=initial_balance, htf_bias=bias_series, config=config)
+        
+        # Store Market Data (needed for portfolio simulation)
+        market_data[symbol] = results_df # Contains OHLC + Indicators
+        
+        # Collect Candidates
+        signals = results_df[results_df['Signal'].notnull()]
+        for ts, row in signals.iterrows():
+            sig = row.to_dict()
+            sig['Symbol'] = symbol
+            sig['Timestamp'] = ts
+            all_signals.append(sig)
+            
+    # Sort signals by timestamp
+    all_signals.sort(key=lambda x: x['Timestamp'])
+    print(f"Total Candidates Found: {len(all_signals)}")
+    
+    # --- PHASE 2: Portfolio Simulation ---
+    print("\n--- Phase 2: Portfolio Simulation ---")
+    
+    if not market_data:
+        print("No market data available using enabled instruments.")
+        return
+
+    # Master Timeline: Union of all indices
+    print("Building Master Timeline...")
+    all_indices = pd.DatetimeIndex([])
+    for df in market_data.values():
+        all_indices = all_indices.union(df.index)
+    all_indices = all_indices.sort_values()
+    
+    pm = PortfolioManager(initial_balance, risk_config=config.get('risk', {}), limits_config=config.get('trading_limits', {}))
+    
+    sig_idx = 0
+    num_signals = len(all_signals)
+    count_processed = 0
+    
+    # Optimization: Iterate signals or Iterate Time?
+    # Must iterate Time to capture Exits accurately.
+    # 300k steps is fine.
+    
+    print(f"Simulating {len(all_indices)} time steps...")
+    
+    for current_time in all_indices:
+        # A. Get Price Snapshot
+        current_prices = {}
+        for sym, df in market_data.items():
+            if current_time in df.index:
+                # Need Bid/Ask High/Low for strict checking
+                # Assuming df has 'Bid_Low' etc if processed, or falling back to OHLC
+                row = df.loc[current_time]
+                # Construct price dict
+                current_prices[sym] = row
+        
+        if not current_prices: continue
+            
+        # B. Mark to Market & Exits
+        pm.update_mark_to_market(current_prices)
+        pm.process_market_update(current_time, current_prices)
+        
+        # C. Process New Signals
+        while sig_idx < num_signals and all_signals[sig_idx]['Timestamp'] == current_time:
+            candidate = all_signals[sig_idx]
+            sig_idx += 1
+            
+            # Use Portfolio Manager to Size & Check Correlation
+            units = pm.size_candidate(candidate)
+            if units > 0:
+                pm.execute_trade(candidate, units, current_time)
+                
+        if count_processed % 10000 == 0:
+            print(f"\rProgress: {current_time} | Equity: ${pm.current_equity:.2f}", end="")
+        count_processed += 1
+        
+    print(f"\nSimulation Complete. Final Equity: ${pm.current_equity:.2f}")
+    
+    # --- PHASE 3: Reporting ---
+    print("\n--- Phase 3: Reporting ---")
+    
+    trades = pm.closed_trades
+    all_trades_df = pd.DataFrame(trades)
+    
+    summary_results = []
+    
+    if not all_trades_df.empty:
+        # Split by Instrument for Individual Reporting
+        instruments_traded = all_trades_df['symbol'].unique()
+        
+        for symbol in instruments_traded:
+            inst_trades = all_trades_df[all_trades_df['symbol'] == symbol]
+            
+            # Save CSV
             out_csv = os.path.join(base_output_dir, f"{symbol}_trades.csv")
-            trades_df.to_csv(out_csv, index=False)
-            print(f"Saved trades to {out_csv}")
+            inst_trades.to_csv(out_csv, index=False)
             
-            # Generate Visualization
-            print(f"Generating charts for {symbol}...")
+            # Metrics
+            # Note: Initial Balance for individual metrics is tricky in portfolio.
+            # We use prorated or just reuse global? Reusing global distorts %.
+            # We'll use 0 for "Allocated" or just display PnL.
+            metrics = calculate_metrics(inst_trades, initial_balance) # Rel to global equity
+            metrics['Instrument'] = symbol
+            summary_results.append(metrics)
+            
+            # Charts
             inst_chart_dir = os.path.join(charts_dir, symbol)
-            generate_dashboard(trades_df, inst_chart_dir, initial_balance, instrument=symbol)
-        else:
-            print(f"No trades generated for {symbol}.")
-            # Initialize empty metrics for report
-            metrics = {
-                'Total Trades': 0, 
-                'Win Rate (%)': 0, 'Total PnL ($)': 0, 'Return (%)': 0, 
-                'Max Drawdown (%)': 0, 'Sharpe Ratio': 0,
-                'Avg Score': 0, 'Tier 1 Trades': 0, 'Tier 2 Trades': 0,
-                'Avg HTF': 0, 'Avg Disp': 0, 'Avg Liq': 0, 'Avg Ctxt': 0
-            }
-            
-        # Add to Summary
-        metrics['Instrument'] = symbol
-        summary_results.append(metrics)
-            
-    # 3. Final Report
-    if summary_results:
-        print("\n\n=== FINAL SUMMARY REPORT ===")
+            # generate_dashboard requires dataframe with 'exit_time', 'pnl'
+            # our trade dicts match
+            print(f"Generating charts for {symbol}...")
+            # We pass initial_balance=None so it doesn't show huge curve flatline?
+            # Or we pass a nominal amount.
+            generate_dashboard(inst_trades, inst_chart_dir, initial_balance, instrument=symbol)
+
+        # Portfolio Summary
+        print("\n=== FINAL SUMMARY REPORT ===")
         summary_df = pd.DataFrame(summary_results)
         
-        # Performance Report
-        perf_cols = ['Instrument', 'Total Trades', 'Win Rate (%)', 'Total PnL ($)', 'Return (%)', 'Max Drawdown (%)', 'Sharpe Ratio', 'Tier 1 Trades', 'Tier 2 Trades']
+        perf_cols = ['Instrument', 'Total Trades', 'Win Rate (%)', 'Total PnL ($)', 'Return (%)', 'Max Drawdown (%)', 'Sharpe Ratio']
         perf_cols = [c for c in perf_cols if c in summary_df.columns]
         print(summary_df[perf_cols].to_string(index=False))
         
         summary_csv = os.path.join(base_output_dir, "summary_report.csv")
         summary_df[perf_cols].to_csv(summary_csv, index=False)
-        print(f"\nSaved summary to {summary_csv}")
         
-        # Detailed Analysis Report
-        print("\n=== DETAILED ANALYSIS REPORT ===")
-        analysis_cols = ['Instrument', 'Total Trades', 'Avg Score', 'Avg HTF', 'Avg Disp', 'Avg Liq', 'Avg Ctxt']
-        # Fill NaNs with 0 just in case
-        analysis_df = summary_df.fillna(0)
-        analysis_cols = [c for c in analysis_cols if c in analysis_df.columns]
-        
-        print(analysis_df[analysis_cols].to_string(index=False))
-        
-        analysis_csv = os.path.join(base_output_dir, "analysis_report.csv")
-        analysis_df[analysis_cols].to_csv(analysis_csv, index=False)
-        print(f"\nSaved analysis to {analysis_csv}")
     else:
-        print("\nNo results to summarize.")
+        print("No trades executed in portfolio simulation.")
 
 if __name__ == "__main__":
     import argparse

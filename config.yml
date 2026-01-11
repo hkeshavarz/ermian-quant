@@ -1,13 +1,25 @@
 # Backtest Configuration
 
+environment: "backtest" # backtest | paper | live
+
+trading_limits:
+  max_concurrent_positions: 3
+  max_correlated_positions: 2
+  correlation_threshold: 0.75
+
+timeframes:
+  analysis:
+    - "4h"
+    - "1D"
+  execution:
+    - "15min"
+
 backtest:
   start_date: "2020-01-01"
   end_date: "2025-12-31"
   initial_balance: 25000.0
   output_base_dir: "data/backtest_results"
 
-data:
-  timeframe: "5min"
 
 instruments:
   - symbol: "AUDUSD"
@@ -59,3 +71,53 @@ instruments:
     enabled: true
     input_file: "data/sources/xagusd/*tick*.csv"
     processed_dir: "data/processed/xagusd"
+
+# --- Strategy Configuration ---
+indicators:
+  atr_fast: 14
+  atr_slow: 100
+  chop_period: 14
+  adx_period: 14
+
+adaptive:
+  base_lookback: 5
+  min_lookback: 3
+  max_lookback: 10
+  swing_lookback:
+    htf: 5
+    ltf: 3
+
+smc:
+  fvg_threshold: 0.5        # Multiplier of ATR
+  disp_body_ratio: 0.6
+  disp_range_atr: 1.5       # Multiplier of ATR
+  sweep_atr: 0.2           # Tolerance for sweeps relative to ATR
+  ob_volume_factor: 1.0     # Volume > SMA * factor
+  bos_required: true
+  choch_required: true
+
+scoring:
+  # Confluence Weights (Max 100)
+  htf_alignment: 25
+  htf_poi: 15
+  displacement: 10
+  fvg_clean: 10
+  liquidity_sweep: 15
+  killzone: 10
+  chop_filter: 5
+  
+  # Thresholds
+  tier_1_threshold: 85
+  tier_2_threshold: 65
+  
+  # Regime Filters
+  chop_regime_threshold: 61.8
+  adx_regime_threshold: 20
+
+risk:
+  base_risk_pct: 0.01          # 1.0% Base Risk per trade
+  tier_2_modifier: 0.5         # Tier 2 trades take 50% risk
+  circuit_breaker_drawdown: 0.05 # 5% DD triggers circuit breaker
+  circuit_breaker_modifier: 0.5  # Reduce risk by 50% when breaker active
+  max_correlated_exposure: 0.02  # Max aggregate risk on correlated assets
+  correlation_threshold: 0.7     # Correlation coeff to define "correlated"
